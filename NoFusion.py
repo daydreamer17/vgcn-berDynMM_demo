@@ -127,7 +127,7 @@ def run_layerwise_experiment():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
-    bert_model_dir = "./model"  # 使用预训练的 BERT 模型名称或路径
+    bert_model_dir = "bert-base-uncased"  # 使用预训练的 BERT 模型名称或路径
     num_classes = 2
     gcn_in_dim_word = 768  # 单词级图的节点特征维度
     gcn_hidden_dim_word = 128

@@ -1,4 +1,5 @@
-*Environment Setting
+*Environment Setting:
+
 **dgl=2.4.0+cu118
 **Pytorch=2.1.2+CUDA11.8
 **tqdm=4.64.1

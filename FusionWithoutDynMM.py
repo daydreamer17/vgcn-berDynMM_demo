@@ -1,56 +1,77 @@
+# main.py
+
 import torch
-import torch.optim as optim
-from torch.utils.data import DataLoader
-import torch.nn as nn
 import torch.nn.functional as F
-import dgl
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, auc
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, auc
-from transformers import BertTokenizer
 from tqdm import tqdm
-from custom_dataset import CustomDataset
+from transformers import BertTokenizer
 from VocabularyGraph import VocabularyGraph
-from vgcn_bert import VGCNBertDynMM
-from vgcn_bertNoDynMM import VGCNBertDynMM_NoDynMM
+from CharacterGraph import CharacterGraph
+from custom_dataset import CustomDataset
+# 将原本对 vgcn_bert 的引用改为无 DynMM 版本
+# from vgcn_bert import VGCNBertDynMM
+from vgcn_bertNoDynMM import VGCNBertNoDynMM
+import dgl
 
-# 自定义数据合并函数
 def collate_fn(batch):
-    input_ids, attention_masks, graphs, char_ids, labels = zip(*batch)
+    """
+    自定义的 collate_fn，用于 DataLoader。
+
+    Args:
+        batch (list of tuples): 每个元素为 (input_ids, attention_mask, subgraph_word, subgraph_char, char_ids, label)。
+
+    Returns:
+        tuple: (input_ids, attention_masks, batched_graph_word, batched_graph_char, char_ids, labels)
+    """
+    input_ids, attention_masks, graphs_word, graphs_char, char_ids, labels = zip(*batch)
     input_ids = torch.stack(input_ids)
     attention_masks = torch.stack(attention_masks)
-    batched_graph = dgl.batch(graphs)
-    char_ids = [torch.tensor(c) for c in char_ids]
+    batched_graph_word = dgl.batch(graphs_word)
+    batched_graph_char = dgl.batch(graphs_char)
     char_ids = torch.nn.utils.rnn.pad_sequence(char_ids, batch_first=True, padding_value=0)
     labels = torch.stack(labels)
-    return input_ids, attention_masks, batched_graph, char_ids, labels
+    return input_ids, attention_masks, batched_graph_word, batched_graph_char, char_ids, labels
 
-# 评估函数
-def evaluate(model, data_loader, device, num_classes=2, use_dynmm=True):
+def evaluate(model, data_loader, device, num_classes=2):
+    """
+    评估模型性能。
+
+    Args:
+        model (nn.Module): 要评估的模型（已去除 DynMM）。
+        data_loader (DataLoader): 数据加载器。
+        device (torch.device): 设备。
+        num_classes (int): 分类类别数。
+
+    Returns:
+        tuple: (accuracy, precision, recall, f1)
+    """
     model.eval()
     y_true, y_pred, y_probs = [], [], []
     total_loss = 0
 
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Evaluating", leave=False):
-            input_ids, attention_mask, graph, char_ids, labels = batch
-            input_ids, attention_mask, graph, char_ids, labels = (
+            input_ids, attention_mask, graph_word, graph_char, char_ids, labels = batch
+            input_ids, attention_mask, graph_word, graph_char, char_ids, labels = (
                 input_ids.to(device, non_blocking=True),
                 attention_mask.to(device, non_blocking=True),
-                graph.to(device, non_blocking=True),
+                graph_word.to(device, non_blocking=True),
+                graph_char.to(device, non_blocking=True),
                 char_ids.to(device, non_blocking=True),
                 labels.to(device, non_blocking=True),
             )
 
-            if use_dynmm:
-                logits = model(input_ids, attention_mask, graph, char_ids)
-            else:
-                logits = model(input_ids, attention_mask, graph,char_ids)
+            # 前向传播 (无 DynMM 模型)
+            logits = model(input_ids, attention_mask, graph_word, graph_char, char_ids)
 
+            # 计算损失
             loss = F.cross_entropy(logits, labels)
             total_loss += loss.item()
 
+            # 预测结果
             predictions = torch.argmax(logits, dim=1)
             y_true.extend(labels.cpu().numpy())
             y_pred.extend(predictions.cpu().numpy())
@@ -72,9 +93,9 @@ def evaluate(model, data_loader, device, num_classes=2, use_dynmm=True):
                 yticklabels=[f"Class {i}" for i in range(num_classes)])
     plt.xlabel("Predicted")
     plt.ylabel("True")
-    plt.title("Confusion Matrix")
-    cm_filename = f"confusion_matrix_{'with_dynmm' if use_dynmm else 'without_dynmm'}.png"
-    plt.savefig(cm_filename)
+    plt.title("Confusion Matrix (No DynMM)")
+    plt.savefig("confusion_matrix.png")
+    plt.close()
 
     # Plot ROC for each class
     y_probs = np.array(y_probs)
@@ -86,129 +107,155 @@ def evaluate(model, data_loader, device, num_classes=2, use_dynmm=True):
         plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate")
-        plt.title(f"ROC Curve for Class {i}")
+        plt.title(f"ROC Curve (No DynMM) for Class {i}")
         plt.legend(loc="lower right")
-        roc_filename = f"roc_curve_class_{i}_{'with_dynmm' if use_dynmm else 'without_dynmm'}.png"
-        plt.savefig(roc_filename)
+        plt.savefig(f"roc_curve_class_{i}.png")
+        plt.close()
 
     # Print overall metrics
-    print(f"Evaluation: Average loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
+    print(f"\nEvaluation: Average loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
 
     # Print class-specific metrics
     for i in range(num_classes):
-        class_indices = np.where(np.array(y_true) == i)[0]
-        class_y_true = np.array(y_true)[class_indices]
-        class_y_pred = np.array(y_pred)[class_indices]
-
-        # Compute binary precision, recall, and F1 for the current class
         class_precision = precision_score(np.array(y_true) == i, np.array(y_pred) == i, zero_division=0)
         class_recall = recall_score(np.array(y_true) == i, np.array(y_pred) == i, zero_division=0)
         class_f1 = f1_score(np.array(y_true) == i, np.array(y_pred) == i, zero_division=0)
-
         print(f"Class {i} Metrics: Precision = {class_precision:.4f}, Recall = {class_recall:.4f}, F1 Score = {class_f1:.4f}")
 
     return accuracy, precision, recall, f1
 
-# 实验函数
-def run_ablation_experiment():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    bert_model_dir = './model'  # 指定你的BERT模型路径
-    num_classes = 2  # 分类数量
-    gcn_in_dim = 768  # GCN输入维度
-    gcn_hidden_dim = 128  # GCN隐藏层维度
-    char_vocab_size = 256  # 字符词汇表大小
-    char_emb_dim = 128  # 字符嵌入维度
+def run_layerwise_experiment():
+    """
+    运行分层实验，训练和评估“无 DynMM”模型在不同 BERT 层的表现。
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    bert_model_dir = "./model"  # 使用预训练的 BERT 模型名称或路径
+    num_classes = 2
+    gcn_in_dim_word = 768  # 单词级图的节点特征维度
+    gcn_hidden_dim_word = 128
+    gcn_in_dim_char = 128  # 字符级图的节点特征维度
+    gcn_hidden_dim_char = 64
+    char_vocab_size = 256
+    char_emb_dim = 128
     learning_rate = 2e-5
-    num_epochs = 5
-    batch_size = 16
+    num_epochs = 10
+    batch_size = 32
 
-    # 数据加载器
     tokenizer = BertTokenizer.from_pretrained(bert_model_dir)
     vocab_size = len(tokenizer.get_vocab())
-    vocab_graph = VocabularyGraph(vocab_size)
-    train_dataset = CustomDataset('Data/Grambedding_dataset/Train.csv', tokenizer, vocab_size, gcn_in_dim, train=True, sample_fraction=0.08)
-    val_dataset = CustomDataset('Data/Grambedding_dataset/Train.csv', tokenizer, vocab_size, gcn_in_dim, train=False, sample_fraction=0.05)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, collate_fn=collate_fn, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=8, collate_fn=collate_fn, pin_memory=True)
+    # 数据加载
+    train_dataset = CustomDataset(
+        csv_file="Data/Grambedding_dataset/Train.csv",
+        tokenizer=tokenizer,
+        vocab_size=vocab_size,
+        gcn_in_dim_word=gcn_in_dim_word,
+        gcn_in_dim_char=gcn_in_dim_char,
+        use_char=True,           # 如果数据集需要字符级处理
+        char_vocab_size=char_vocab_size,
+        train=True,
+        test_size=0.2,
+        sample_fraction=0.0125
+    )
+    val_dataset = CustomDataset(
+        csv_file="Data/Grambedding_dataset/Train.csv",
+        tokenizer=tokenizer,
+        vocab_size=vocab_size,
+        gcn_in_dim_word=gcn_in_dim_word,
+        gcn_in_dim_char=gcn_in_dim_char,
+        use_char=True,
+        char_vocab_size=char_vocab_size,
+        train=False,
+        test_size=0.2,
+        sample_fraction=0.05
+    )
 
-    # 损失函数
-    criterion = nn.CrossEntropyLoss()
+    # 优化的数据加载器
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        collate_fn=collate_fn, 
+        pin_memory=True, 
+        num_workers=4
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        collate_fn=collate_fn, 
+        pin_memory=True, 
+        num_workers=4
+    )
 
-    # 模型设置
-    model_with_dynmm = VGCNBertDynMM(bert_model_dir, gcn_in_dim, gcn_hidden_dim, num_classes, char_vocab_size, char_emb_dim).to(device)
-    optimizer_with_dynmm = optim.Adam(model_with_dynmm.parameters(), lr=learning_rate)
+    results = []
+    # 测试您在 [1, 6, 12] 等不同 BERT 层下的表现
+    for layer_idx in [1, 6, 12]:
+        print(f"\n--- Training 'No DynMM' Model with BERT layer {layer_idx} ---")
+        # 改为使用无 DynMM 的模型类
+        model = VGCNBertNoDynMM(
+            bert_model_name=bert_model_dir,
+            gcn_in_dim_word=gcn_in_dim_word,
+            gcn_hidden_dim_word=gcn_hidden_dim_word,
+            gcn_in_dim_char=gcn_in_dim_char,
+            gcn_hidden_dim_char=gcn_hidden_dim_char,
+            num_classes=num_classes,
+            char_vocab_size=char_vocab_size,
+            char_emb_dim=char_emb_dim,
+            layer_idx=layer_idx
+        )
+        model.to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        criterion = torch.nn.CrossEntropyLoss()
 
-    model_without_dynmm = VGCNBertDynMM_NoDynMM(bert_model_dir, gcn_in_dim, gcn_hidden_dim, num_classes, char_vocab_size, char_emb_dim).to(device)
-    optimizer_without_dynmm = optim.Adam(model_without_dynmm.parameters(), lr=learning_rate)
+        for epoch in range(num_epochs):
+            print(f"\nLayer {layer_idx}, Epoch {epoch + 1}/{num_epochs}")
+            model.train()
+            total_train_loss = 0
+            for batch in tqdm(train_loader, desc="Training", leave=False):
+                input_ids, attention_mask, graph_word_batch, graph_char_batch, char_ids, labels = batch
+                input_ids, attention_mask, graph_word_batch, graph_char_batch, char_ids, labels = (
+                    input_ids.to(device, non_blocking=True),
+                    attention_mask.to(device, non_blocking=True),
+                    graph_word_batch.to(device, non_blocking=True),
+                    graph_char_batch.to(device, non_blocking=True),
+                    char_ids.to(device, non_blocking=True),
+                    labels.to(device, non_blocking=True),
+                )
 
-    results = {}
+                optimizer.zero_grad()
+                logits = model(input_ids, attention_mask, graph_word_batch, graph_char_batch, char_ids)
+                loss = criterion(logits, labels)
+                loss.backward()
+                optimizer.step()
 
-    # 训练去除 DynMM 的模型
-    print("\nTraining Model without DynMM...")
-    for epoch in range(num_epochs):
-        print(f'Epoch {epoch + 1}/{num_epochs}')
-        model_without_dynmm.train()
-        total_train_loss = 0
-        for batch in tqdm(train_loader, desc="Training", leave=False):
-            input_ids, attention_mask, graphs, char_ids, labels = batch
-            input_ids, attention_mask, graphs, char_ids, labels = (
-                input_ids.to(device, non_blocking=True),
-                attention_mask.to(device, non_blocking=True),
-                graphs.to(device, non_blocking=True),
-                char_ids.to(device, non_blocking=True),
-                labels.to(device, non_blocking=True),
-            )
+                total_train_loss += loss.item()
+            avg_train_loss = total_train_loss / len(train_loader)
+            print(f"Train Loss: {avg_train_loss:.4f}")
 
-            optimizer_without_dynmm.zero_grad()
-            logits = model_without_dynmm(input_ids, attention_mask, graphs, char_ids)
-            loss = criterion(logits, labels)
-            loss.backward()
-            optimizer_without_dynmm.step()
+        # 评估模型
+        accuracy, precision, recall, f1 = evaluate(model, val_loader, device, num_classes)
+        results.append((layer_idx, accuracy, precision, recall, f1))
 
-            total_train_loss += loss.item()
+    # 可视化
+    layers, accuracies, precisions, recalls, f1s = zip(*results)
+    plt.figure(figsize=(10, 6))
+    plt.plot(layers, accuracies, label="Accuracy", marker="o")
+    plt.plot(layers, precisions, label="Precision", marker="x")
+    plt.plot(layers, recalls, label="Recall", marker="s")
+    plt.plot(layers, f1s, label="F1 Score", marker="d")
+    plt.title("Layer-wise Performance of VGCNBertNoDynMM Model")
+    plt.xlabel("BERT Layer Index")
+    plt.ylabel("Metrics")
+    plt.legend()
+    plt.grid()
+    plt.savefig("layerwise_performance_no_dynmm.png")
+    plt.close()
 
-        train_loss = total_train_loss / len(train_loader)
-        val_accuracy, val_precision, val_recall, val_f1 = evaluate(model_without_dynmm, val_loader, device, use_dynmm=False)
-        print(f"Train Loss: {train_loss:.4f}, Val Accuracy: {val_accuracy:.4f}, Val Precision: {val_precision:.4f}, Val Recall: {val_recall:.4f}, Val F1: {val_f1:.4f}")
-
-    results["without_dynmm"] = {"train_loss": train_loss, "val_accuracy": val_accuracy, "val_precision": val_precision, "val_recall": val_recall, "val_f1": val_f1}
-
-    # 训练包含 DynMM 的模型
-    print("Training Model with DynMM...")
-    for epoch in range(num_epochs):
-        print(f'Epoch {epoch + 1}/{num_epochs}')
-        model_with_dynmm.train()
-        total_train_loss = 0
-        for batch in tqdm(train_loader, desc="Training", leave=False):
-            input_ids, attention_mask, graphs, char_ids, labels = batch
-            input_ids, attention_mask, graphs, char_ids, labels = (
-                input_ids.to(device, non_blocking=True),
-                attention_mask.to(device, non_blocking=True),
-                graphs.to(device, non_blocking=True),
-                char_ids.to(device, non_blocking=True),
-                labels.to(device, non_blocking=True),
-            )
-
-            optimizer_with_dynmm.zero_grad()
-            logits = model_with_dynmm(input_ids, attention_mask, graphs, char_ids)
-            loss = criterion(logits, labels)
-            loss.backward()
-            optimizer_with_dynmm.step()
-
-            total_train_loss += loss.item()
-
-        train_loss = total_train_loss / len(train_loader)
-        val_accuracy, val_precision, val_recall, val_f1 = evaluate(model_with_dynmm, val_loader, device, use_dynmm=True)
-        print(f"Train Loss: {train_loss:.4f}, Val Accuracy: {val_accuracy:.4f}, Val Precision: {val_precision:.4f}, Val Recall: {val_recall:.4f}, Val F1: {val_f1:.4f}")
-
-    results["with_dynmm"] = {"train_loss": train_loss, "val_accuracy": val_accuracy, "val_precision": val_precision, "val_recall": val_recall, "val_f1": val_f1}
-
-    return results
-
-if __name__ == '__main__':
-    results = run_ablation_experiment()
-
-    print("\nAblation Experiment Results:")
-    print(f"With DynMM: {results['with_dynmm']}")
-    print(f"Without DynMM: {results['without_dynmm']}")
+    print("\nLayer-wise Experiment Results (No DynMM):")
+    for layer, acc, prec, rec, f1 in results:
+        print(f"Layer {layer}: Accuracy = {acc:.4f}, Precision = {prec:.4f}, Recall = {rec:.4f}, F1 Score = {f1:.4f}")
+        
+if __name__ == "__main__":
+    run_layerwise_experiment()

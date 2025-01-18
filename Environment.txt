@@ -1,0 +1,10 @@
+Environment Setting:
+
+dgl=2.4.0+cu118
+Pytorch=2.1.2+CUDA11.8
+tqdm=4.64.1
+numpy=1.26.4 
+scikit-learn=1.6.0
+seaborn=0.13.2 
+pandas=2.2.3 
+tqdm=4.64.1

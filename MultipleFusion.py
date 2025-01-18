@@ -147,26 +147,28 @@ def run_layerwise_experiment():
 
     # 数据加载
     train_dataset = CustomDataset(
-        csv_file="Data/Grambedding_dataset/Train.csv",
+        csv_file="Data/Mendeley_dataset/Train_data.csv",
         tokenizer=tokenizer,
         vocab_size=vocab_size,
         gcn_in_dim_word=gcn_in_dim_word,
         gcn_in_dim_char=gcn_in_dim_char,
+        use_char=True,
         char_vocab_size=char_vocab_size,
         train=True,
         test_size=0.2,
-        sample_fraction=0.0125
+        sample_fraction=0.0075
     )
     val_dataset = CustomDataset(
-        csv_file="Data/Grambedding_dataset/Train.csv",
+        csv_file="Data/Mendeley_dataset/Train_data.csv",
         tokenizer=tokenizer,
         vocab_size=vocab_size,
         gcn_in_dim_word=gcn_in_dim_word,
         gcn_in_dim_char=gcn_in_dim_char,
+        use_char=True,
         char_vocab_size=char_vocab_size,
         train=False,
         test_size=0.2,
-        sample_fraction=0.05
+        sample_fraction=0.03
     )
 
     # 优化的数据加载器
